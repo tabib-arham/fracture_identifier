@@ -96,9 +96,10 @@ if 'gdrive_model_path' not in st.session_state:
 def load_preprocessing_objects():
     """Load label encoders and scaler"""
     try:
-        with open(OUTPUT_DIR / 'label_encoders.pkl', 'rb') as f:
+        # Load from same directory as app.py
+        with open(BASE_DIR / 'label_encoders.pkl', 'rb') as f:
             label_encoders = pickle.load(f)
-        with open(OUTPUT_DIR / 'scaler.pkl', 'rb') as f:
+        with open(BASE_DIR / 'scaler.pkl', 'rb') as f:
             scaler = pickle.load(f)
         return label_encoders, scaler
     except Exception as e:
@@ -238,7 +239,6 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
         # Find last conv layer if not specified
         if layer_name is None:
             for layer in reversed(model.layers):
-                # Check if layer has 4D output (conv layer)
                 try:
                     if len(layer.output.shape) == 4:
                         layer_name = layer.name
@@ -251,42 +251,70 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
             return None
         
         # Create gradient model
-        grad_model = Model(
-            inputs=model.inputs,
-            outputs=[model.get_layer(layer_name).output, model.output]
-        )
-        
-        # Compute gradients - pass inputs as list
-        with tf.GradientTape() as tape:
-            # Model expects [image_input, metadata_input]
-            conv_outputs, predictions = grad_model([img_array, meta_array], training=False)
-            loss = predictions[:, class_idx]
-        
-        # Get gradients
-        grads = tape.gradient(loss, conv_outputs)
-        
-        if grads is None:
-            st.warning("Could not compute gradients for Grad-CAM")
+        try:
+            grad_model = Model(
+                inputs=model.inputs,
+                outputs=[model.get_layer(layer_name).output, model.output]
+            )
+        except Exception as e:
+            st.error(f"Error creating gradient model: {str(e)}")
             return None
         
-        # Pool gradients across spatial dimensions
-        pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
+        # Compute gradients
+        try:
+            with tf.GradientTape() as tape:
+                outputs = grad_model([img_array, meta_array], training=False)
+                # Outputs might be a list, unpack carefully
+                if isinstance(outputs, list):
+                    conv_outputs = outputs[0]
+                    predictions = outputs[1]
+                else:
+                    conv_outputs, predictions = outputs
+                
+                # Get loss for the predicted class
+                loss = predictions[0][class_idx]  # predictions is [batch_size, num_classes]
+        except Exception as e:
+            st.error(f"Error in forward pass: {str(e)}")
+            return None
         
-        # Weight feature maps by pooled gradients
-        conv_outputs_np = conv_outputs[0].numpy()
-        pooled_grads_np = pooled_grads.numpy()
+        # Get gradients
+        try:
+            grads = tape.gradient(loss, conv_outputs)
+            if grads is None:
+                st.warning("Could not compute gradients for Grad-CAM")
+                return None
+        except Exception as e:
+            st.error(f"Error computing gradients: {str(e)}")
+            return None
         
-        # Compute weighted combination
-        heatmap = np.zeros(conv_outputs_np.shape[:2], dtype=np.float32)
-        for i in range(len(pooled_grads_np)):
-            heatmap += pooled_grads_np[i] * conv_outputs_np[:, :, i]
-        
-        # Apply ReLU and normalize
-        heatmap = np.maximum(heatmap, 0)
-        if heatmap.max() > 0:
-            heatmap = heatmap / heatmap.max()
-        
-        return heatmap
+        # Process gradients and create heatmap
+        try:
+            # Get numpy arrays
+            conv_outputs_val = conv_outputs.numpy()
+            grads_val = grads.numpy()
+            
+            # Pool gradients: average over height and width
+            # Shape: [batch, height, width, channels] -> [batch, channels]
+            pooled_grads = np.mean(grads_val, axis=(1, 2))[0]
+            
+            # Get conv outputs for first batch
+            conv_output = conv_outputs_val[0]
+            
+            # Weight each channel by corresponding gradient
+            heatmap = np.zeros(conv_output.shape[:2], dtype=np.float32)
+            for i in range(len(pooled_grads)):
+                heatmap += pooled_grads[i] * conv_output[:, :, i]
+            
+            # Apply ReLU and normalize
+            heatmap = np.maximum(heatmap, 0)
+            if heatmap.max() > 0:
+                heatmap = heatmap / heatmap.max()
+            
+            return heatmap
+        except Exception as e:
+            st.error(f"Error processing heatmap: {str(e)}")
+            return None
+            
     except Exception as e:
         st.error(f"Error generating Grad-CAM: {str(e)}")
         return None
@@ -534,7 +562,7 @@ def main():
                 with col_a:
                     age = st.number_input("Age", min_value=0, max_value=120, value=50)
                     gender = st.selectbox("Gender", ["male", "female", "unknown"])
-                    bone_type = st.selectbox("Bone Type", ["humerus", "radius", "ulna", "femur", "tibia", "fibula", "unknown"])
+                    bone_type = st.selectbox("Bone Type", ["humerus", "radius", "ulna", "femur", "tibia", "fibula", "elbow", "unknown"])
                 
                 with col_b:
                     left_right = st.selectbox("Side", ["left", "right", "unknown"])
