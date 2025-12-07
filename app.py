@@ -412,8 +412,8 @@ def process_metadata_input(metadata_dict, label_encoders, scaler):
             # Fracture gap: normalize to 0-1 (assume max 20mm)
             numerical_scaled = [
                 numerical_values[0] / 100.0,  # age
-                numerical_values[1] / 50.0,   # bone_width
-                numerical_values[2] / 20.0    # fracture_gap
+                numerical_values[1] / 200.0,   # bone_width
+                numerical_values[2] / 50.0    # fracture_gap
             ]
         
         features.extend(numerical_scaled)
@@ -568,8 +568,8 @@ def main():
                 
                 with col_b:
                     left_right = st.selectbox("Side", ["left", "right", "unknown"])
-                    bone_width = st.number_input("Bone Width (mm)", min_value=0.0, max_value=300.0, value=20.0, step=0.1)
-                    fracture_gap = st.number_input("Fracture Gap (mm)", min_value=0.0, max_value=150.0, value=5.0, step=0.1)
+                    bone_width = st.number_input("Bone Width (mm)", min_value=0.0, max_value=200.0, value=20.0, step=0.1)
+                    fracture_gap = st.number_input("Fracture Gap (mm)", min_value=0.0, max_value=50.0, value=5.0, step=0.1)
                     gap_visibility = st.selectbox("Gap Visibility", ["visible", "not_visible", "slight"])
                 
                 submit_button = st.form_submit_button("🔍 Analyze")
@@ -803,4 +803,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
