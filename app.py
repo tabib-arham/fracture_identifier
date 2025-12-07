@@ -70,7 +70,9 @@ st.markdown("""
 # Constants
 CLASS_NAMES = ['distal-fracture', 'non-fracture', 'post-fracture', 'proximal-fracture']
 IMG_SIZE = (224, 224)
-BASE_DIR = Path(r"c:\Users\noora\Downloads\Telegram Desktop\thesis data\thesis data")
+
+# Use relative path for deployment compatibility
+BASE_DIR = Path(__file__).parent  # Same directory as app.py
 MODELS_DIR = BASE_DIR / "outputs" / "models"
 OUTPUT_DIR = BASE_DIR / "outputs"
 
