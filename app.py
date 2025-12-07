@@ -78,7 +78,7 @@ OUTPUT_DIR = BASE_DIR / "outputs"
 
 # Default Model URL (Configure your model URL here)
 # Set to None if you don't want a default model
-DEFAULT_MODEL_URL = "https://drive.google.com/file/d/1731iJjX5LsxeaoM37sUP2lKIxhcsnUEz/view?usp=drive_link"
+DEFAULT_MODEL_URL = "https://drive.google.com/file/d/1wsu2Le4-Tp6gwCIyWUemm0M82vNoAS33/view?usp=sharing"
 # Or use a direct URL: "https://example.com/path/to/model.h5"
 
 # Initialize session state
@@ -803,5 +803,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
