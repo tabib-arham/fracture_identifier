@@ -3,7 +3,6 @@ import numpy as np
 import pandas as pd
 import cv2
 import matplotlib.pyplot as plt
-import seaborn as sns
 from pathlib import Path
 import pickle
 import os
@@ -15,9 +14,12 @@ from tensorflow.keras.models import Model, load_model
 from lime import lime_image
 from skimage.segmentation import mark_boundaries
 import warnings
+
 warnings.filterwarnings('ignore')
 
+# -----------------------------------------------------------------------------
 # Page configuration
+# -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Bone Fracture Classification System",
     page_icon="🦴",
@@ -25,7 +27,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# -----------------------------------------------------------------------------
 # Custom CSS for better UI
+# -----------------------------------------------------------------------------
 st.markdown("""
 <style>
     .main-header {
@@ -67,39 +71,40 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Constants
+# -----------------------------------------------------------------------------
+# Constants & Paths
+# -----------------------------------------------------------------------------
 CLASS_NAMES = ['distal-fracture', 'non-fracture', 'post-fracture', 'proximal-fracture']
 IMG_SIZE = (224, 224)
 
-# Primary Diagnosis options (visible in UI)
+# For UI
 PRIMARY_DIAGNOSIS_OPTIONS = ["unknown"] + CLASS_NAMES
 
-# Paths
 BASE_DIR = Path(__file__).parent
 MODELS_DIR = BASE_DIR / "outputs" / "models"
 OUTPUT_DIR = BASE_DIR / "outputs"
 
-# Default Model URL
+# Default model URL (Google Drive)
 DEFAULT_MODEL_URL = "https://drive.google.com/file/d/1731iJjX5LsxeaoM37sUP2lKIxhcsnUEz/view?usp=drive_link"
 
-# Session state
+# -----------------------------------------------------------------------------
+# Session State
+# -----------------------------------------------------------------------------
 if 'model' not in st.session_state:
     st.session_state.model = None
 if 'label_encoders' not in st.session_state:
     st.session_state.label_encoders = None
 if 'scaler' not in st.session_state:
     st.session_state.scaler = None
-if 'metadata_feature_cols' not in st.session_state:
-    st.session_state.metadata_feature_cols = None
 if 'gdrive_model_path' not in st.session_state:
     st.session_state.gdrive_model_path = None
 
-# =========================
+# -----------------------------------------------------------------------------
 # Helper Functions
-# =========================
+# -----------------------------------------------------------------------------
 @st.cache_resource
 def load_preprocessing_objects():
-    """Load label encoders and scaler"""
+    """Load label encoders and scaler saved from training pipeline."""
     try:
         with open(BASE_DIR / 'label_encoders.pkl', 'rb') as f:
             label_encoders = pickle.load(f)
@@ -110,9 +115,10 @@ def load_preprocessing_objects():
         st.warning(f"⚠️ Preprocessing objects not found. Using defaults. ({str(e)})")
         return None, None
 
+
 @st.cache_resource
 def load_trained_model(model_path):
-    """Load a trained model with TensorFlow version compatibility"""
+    """Load a trained model with TF compatibility fix for DepthwiseConv2D."""
     try:
         from tensorflow.keras.layers import DepthwiseConv2D
 
@@ -136,9 +142,10 @@ def load_trained_model(model_path):
         st.error(f"Error loading model: {str(e)}")
         return None
 
+
 @st.cache_resource
 def download_model_from_url(url):
-    """Download model from URL (Google Drive or direct link)"""
+    """Download .h5 model from Google Drive or direct URL."""
     try:
         import urllib.request
 
@@ -156,7 +163,6 @@ def download_model_from_url(url):
                 return None
 
             download_url = f'https://drive.google.com/uc?id={file_id}'
-
             with st.spinner('Downloading model from Google Drive...'):
                 gdown.download(download_url, output_path, quiet=False)
         else:
@@ -179,8 +185,9 @@ def download_model_from_url(url):
         st.error(f"Error downloading model: {str(e)}")
         return None
 
+
 def preprocess_xray_image(image, apply_clahe=True, apply_blur=True):
-    """Preprocess X-ray image with medical imaging techniques"""
+    """Preprocess X-ray image (grayscale, CLAHE, Gaussian blur, normalize)."""
     if len(image.shape) == 3:
         img = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     else:
@@ -199,8 +206,9 @@ def preprocess_xray_image(image, apply_clahe=True, apply_blur=True):
     processed = processed.astype(np.float32) / 255.0
     return original, processed
 
+
 def prepare_image_for_model(image):
-    """Prepare image for model prediction"""
+    """Preprocess and resize image to model input."""
     _, processed = preprocess_xray_image(image)
     processed_uint8 = (processed * 255).astype(np.uint8)
     img_resized = cv2.resize(processed_uint8, IMG_SIZE)
@@ -208,10 +216,16 @@ def prepare_image_for_model(image):
     img_normalized = img_rgb.astype(np.float32) / 255.0
     return img_normalized, img_rgb
 
+
 def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
-    """Generate Grad-CAM heatmap with safer indexing"""
+    """
+    Robust Grad-CAM for multimodal models.
+    Handles list/tuple/nested outputs and picks:
+      - first 4D tensor as conv feature map
+      - first 2D tensor as class logits
+    """
     try:
-        # Find last conv layer if not specified
+        # 1. Find last conv layer if not specified
         if layer_name is None:
             for layer in reversed(model.layers):
                 try:
@@ -222,10 +236,10 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
                     continue
 
         if layer_name is None:
-            st.warning("No convolutional layer found for Grad-CAM")
+            st.warning("No convolutional layer found for Grad-CAM (maybe pure Transformer or MLP).")
             return None
 
-        # Build gradient model
+        # 2. Build gradient model
         try:
             grad_model = Model(
                 inputs=model.inputs,
@@ -235,21 +249,48 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
             st.error(f"Error creating gradient model: {str(e)}")
             return None
 
-        # Forward pass
+        # Helper: flatten nested lists/tuples
+        def flatten_outputs(x):
+            flat = []
+
+            def _flatten(z):
+                if isinstance(z, (list, tuple)):
+                    for item in z:
+                        _flatten(item)
+                else:
+                    flat.append(z)
+
+            _flatten(x)
+            return flat
+
+        # 3. Forward pass
         try:
             with tf.GradientTape() as tape:
-                conv_outputs, predictions = grad_model([img_array, meta_array], training=False)
+                raw_outputs = grad_model([img_array, meta_array], training=False)
+                flat = flatten_outputs(raw_outputs)
+
+                conv_outputs = None
+                predictions = None
+
+                for t in flat:
+                    try:
+                        rank = len(t.shape)
+                    except Exception:
+                        continue
+                    if rank == 4 and conv_outputs is None:
+                        conv_outputs = t
+                    elif rank == 2 and predictions is None:
+                        predictions = t
+
+                if conv_outputs is None or predictions is None:
+                    st.warning("Could not find suitable conv or prediction tensors for Grad-CAM.")
+                    return None
 
                 preds_shape = predictions.shape
-                # Handle output shapes: (batch, num_classes) or (num_classes,)
-                if len(preds_shape) == 2:
+                if len(preds_shape) == 2:  # (batch, num_classes)
                     num_classes = int(preds_shape[1])
                     class_idx_safe = int(np.clip(class_idx, 0, num_classes - 1))
                     loss = predictions[0, class_idx_safe]
-                elif len(preds_shape) == 1:
-                    num_classes = int(preds_shape[0])
-                    class_idx_safe = int(np.clip(class_idx, 0, num_classes - 1))
-                    loss = predictions[class_idx_safe]
                 else:
                     st.error(f"Unexpected prediction shape for Grad-CAM: {preds_shape}")
                     return None
@@ -257,23 +298,23 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
             st.error(f"Error in forward pass: {str(e)}")
             return None
 
-        # Gradients
+        # 4. Gradients
         try:
             grads = tape.gradient(loss, conv_outputs)
             if grads is None:
-                st.warning("Could not compute gradients for Grad-CAM")
+                st.warning("Could not compute gradients for Grad-CAM (None).")
                 return None
         except Exception as e:
             st.error(f"Error computing gradients: {str(e)}")
             return None
 
-        # Heatmap
+        # 5. Heatmap
         try:
             conv_outputs_val = conv_outputs.numpy()
             grads_val = grads.numpy()
 
-            pooled_grads = np.mean(grads_val, axis=(1, 2))[0]
-            conv_output = conv_outputs_val[0]
+            pooled_grads = np.mean(grads_val, axis=(1, 2))[0]  # (C,)
+            conv_output = conv_outputs_val[0]                   # (H, W, C)
 
             heatmap = np.zeros(conv_output.shape[:2], dtype=np.float32)
             for i in range(len(pooled_grads)):
@@ -285,15 +326,16 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
 
             return heatmap
         except Exception as e:
-            st.error(f"Error processing heatmap: {str(e)}")
+            st.error(f"Error processing Grad-CAM heatmap: {str(e)}")
             return None
 
     except Exception as e:
         st.error(f"Error generating Grad-CAM: {str(e)}")
         return None
 
+
 def generate_lime_explanation(model, img_array, meta_array, num_samples=1000):
-    """Generate LIME explanation"""
+    """Generate LIME explanation for a single image."""
     try:
         explainer = lime_image.LimeImageExplainer()
 
@@ -305,8 +347,8 @@ def generate_lime_explanation(model, img_array, meta_array, num_samples=1000):
 
             processed_images = np.array(processed_images)
             meta_batch = np.repeat(meta_array, len(images), axis=0)
-            predictions = model.predict([processed_images, meta_batch], verbose=0)
-            return predictions
+            preds = model.predict([processed_images, meta_batch], verbose=0)
+            return preds
 
         img_for_lime = (img_array[0] * 255).astype(np.uint8)
         explanation = explainer.explain_instance(
@@ -316,16 +358,16 @@ def generate_lime_explanation(model, img_array, meta_array, num_samples=1000):
             hide_color=0,
             num_samples=num_samples
         )
-
         return explanation
     except Exception as e:
         st.error(f"Error generating LIME explanation: {str(e)}")
         return None
 
+
 def process_metadata_input(metadata_dict, label_encoders, scaler):
     """
     Process metadata input from user.
-    Uses same structure as training:
+    Must match training pipeline structure:
     categorical_cols = ['gender', 'bone_type', 'left_right', 'gap_visibility', 'fracture_type']
     numerical_cols   = ['age', 'bone_width', 'fracture_gap']
     """
@@ -343,18 +385,17 @@ def process_metadata_input(metadata_dict, label_encoders, scaler):
                     if value in label_encoders[col].classes_:
                         encoded = label_encoders[col].transform([value])[0]
                     else:
-                        encoded = 0  # unknown
+                        encoded = 0
                 else:
-                    # Fallback simple mapping if encoders not found
+                    # Fallback mapping
                     simple_mapping = {
                         'male': 0, 'female': 1, 'unknown': 2,
-                        'humerus': 0, 'radius': 1, 'ulna': 2, 'femur': 3, 'tibia': 4, 'fibula': 5,
+                        'humerus': 0, 'radius': 1, 'ulna': 2, 'femur': 3, 'tibia': 4, 'fibula': 5, 'elbow': 6,
                         'left': 0, 'right': 1,
-                        # gap visibility (your CSV logic: 0=no, <5=slight, >5=yes)
+                        # gap visibility according to CSV rule (no/slight/yes)
                         'no': 0,
                         'slight': 1,
                         'yes': 2,
-                        # keep old UI names valid too
                         'visible': 2,
                         'not_visible': 0,
                         # fracture types
@@ -372,28 +413,27 @@ def process_metadata_input(metadata_dict, label_encoders, scaler):
             if col in metadata_dict:
                 numerical_values.append(metadata_dict[col])
             else:
-                numerical_values.append(0)
+                numerical_values.append(0.0)
 
         if scaler:
             numerical_scaled = scaler.transform([numerical_values])[0]
         else:
-            # Simple normalization if no scaler
             numerical_scaled = [
-                numerical_values[0] / 100.0,  # age (0-100)
-                numerical_values[1] / 50.0,   # bone_width (0-50mm)
-                numerical_values[2] / 20.0    # fracture_gap (0-20mm)
+                numerical_values[0] / 100.0,
+                numerical_values[1] / 50.0,
+                numerical_values[2] / 20.0
             ]
 
         features.extend(numerical_scaled)
-
         return np.array(features, dtype=np.float32)
+
     except Exception as e:
         st.error(f"Error processing metadata: {str(e)}")
         return None
 
-# =========================
+# -----------------------------------------------------------------------------
 # Main App
-# =========================
+# -----------------------------------------------------------------------------
 def main():
     # Header
     st.markdown('<h1 class="main-header">🦴 Bone Fracture Classification System</h1>', unsafe_allow_html=True)
@@ -402,7 +442,6 @@ def main():
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
-
         st.subheader("1. Select Model Source")
 
         options = ["Local Files", "URL (Google Drive or Direct)"]
@@ -411,20 +450,18 @@ def main():
 
         model_source = st.radio("Load model from:", options)
 
+        # 1) Default model
         if model_source == "Default Model (Hardcoded)":
             st.info("📌 Using configured default model")
             st.code(DEFAULT_MODEL_URL, language=None)
 
             if st.button("Load Default Model"):
                 model_path = download_model_from_url(DEFAULT_MODEL_URL)
-
                 if model_path:
                     st.session_state.gdrive_model_path = model_path
-
                     with st.spinner("Loading default model..."):
                         st.session_state.model = load_trained_model(model_path)
                         st.session_state.label_encoders, st.session_state.scaler = load_preprocessing_objects()
-
                         if st.session_state.model:
                             st.success("✅ Default model loaded successfully!")
                         else:
@@ -432,9 +469,9 @@ def main():
                 else:
                     st.error("❌ Failed to download default model")
 
+        # 2) Local model
         elif model_source == "Local Files":
             model_files = list(MODELS_DIR.glob("*.h5"))
-
             if model_files:
                 model_names = [f.stem for f in model_files]
                 selected_model = st.selectbox("Choose a trained model:", model_names)
@@ -444,7 +481,6 @@ def main():
                         model_path = MODELS_DIR / f"{selected_model}.h5"
                         st.session_state.model = load_trained_model(model_path)
                         st.session_state.label_encoders, st.session_state.scaler = load_preprocessing_objects()
-
                         if st.session_state.model:
                             st.success(f"✅ Model '{selected_model}' loaded successfully!")
                         else:
@@ -452,29 +488,24 @@ def main():
             else:
                 st.warning("⚠️ No trained models found in the models directory")
 
-        else:  # URL
+        # 3) URL model
+        else:
             st.info("📌 Paste your model URL below")
-            st.markdown("**Supported:**")
-            st.markdown("- Google Drive shareable links")
-            st.markdown("- Direct download URLs (.h5 files)")
+            st.markdown("- Supports Google Drive links or direct .h5 URLs")
 
             model_url = st.text_input(
                 "Model URL:",
-                placeholder="https://example.com/model.h5 or Google Drive link",
-                help="Paste a direct download URL or Google Drive shareable link"
+                placeholder="https://example.com/model.h5 or Google Drive link"
             )
 
             if st.button("Download & Load Model"):
                 if model_url:
                     model_path = download_model_from_url(model_url)
-
                     if model_path:
                         st.session_state.gdrive_model_path = model_path
-
                         with st.spinner("Loading downloaded model..."):
                             st.session_state.model = load_trained_model(model_path)
                             st.session_state.label_encoders, st.session_state.scaler = load_preprocessing_objects()
-
                             if st.session_state.model:
                                 st.success("✅ Model downloaded and loaded successfully!")
                             else:
@@ -485,8 +516,6 @@ def main():
                     st.warning("⚠️ Please enter a model URL")
 
         st.divider()
-
-        # Interpretability options
         st.subheader("2. Interpretability Options")
         show_gradcam = st.checkbox("Show Grad-CAM", value=True)
         show_lime = st.checkbox("Show LIME", value=True)
@@ -498,7 +527,9 @@ def main():
 
     tab1, tab2, tab3 = st.tabs(["📤 Upload & Predict", "📊 Batch Analysis", "ℹ️ About"])
 
-    # ------------- Tab 1: Single Image Prediction -------------
+    # -------------------------------------------------------------------------
+    # Tab 1: Single Image Prediction
+    # -------------------------------------------------------------------------
     with tab1:
         st.header("Single Image Prediction")
 
@@ -508,7 +539,7 @@ def main():
         with col1:
             st.subheader("📷 Image Input")
             uploaded_file = st.file_uploader("Upload X-ray image", type=['jpg', 'jpeg', 'png'])
-
+            image_rgb = None
             if uploaded_file:
                 file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
                 image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
@@ -538,7 +569,6 @@ def main():
                     fracture_gap = st.number_input(
                         "Fracture Gap (mm)", min_value=0.0, max_value=50.0, value=5.0, step=0.1
                     )
-                    # UPDATED: include 'slight' & align with CSV (yes/slight/no)
                     gap_visibility = st.selectbox(
                         "Gap Visibility",
                         ["yes", "slight", "no", "unknown"],
@@ -549,14 +579,15 @@ def main():
                     "Primary Diagnosis (clinical / radiologist)",
                     PRIMARY_DIAGNOSIS_OPTIONS,
                     index=0,
-                    help="Select the clinician's primary diagnosis (optional)."
+                    help="Optional: clinician's primary diagnosis"
                 )
 
                 submit_button = st.form_submit_button("🔍 Analyze")
 
-        # Prediction
-        if uploaded_file and submit_button:
+        # Prediction logic
+        if uploaded_file and image_rgb is not None and submit_button:
             with st.spinner("Analyzing..."):
+                # image
                 img_normalized, img_rgb = prepare_image_for_model(image_rgb)
                 img_batch = np.expand_dims(img_normalized, axis=0)
 
@@ -575,7 +606,7 @@ def main():
                     'fracture_gap': fracture_gap,
                     'gap_visibility': gap_visibility,
                     'fracture_type': fracture_type_meta,
-                    'primary_diagnosis': primary_diagnosis  # for record only
+                    'primary_diagnosis': primary_diagnosis
                 }
 
                 meta_features = process_metadata_input(
@@ -587,10 +618,10 @@ def main():
                 if meta_features is not None:
                     meta_batch = np.expand_dims(meta_features, axis=0)
 
-                    predictions = st.session_state.model.predict([img_batch, meta_batch], verbose=0)
-                    pred_class_idx = int(np.argmax(predictions[0]))
+                    preds = st.session_state.model.predict([img_batch, meta_batch], verbose=0)
+                    pred_class_idx = int(np.argmax(preds[0]))
                     pred_class = CLASS_NAMES[pred_class_idx]
-                    pred_confidence = float(predictions[0][pred_class_idx])
+                    pred_confidence = float(preds[0][pred_class_idx])
 
                     st.divider()
                     st.header("🎯 Prediction Results")
@@ -630,10 +661,11 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
 
+                    # Probabilities plot
                     st.subheader("📊 Class Probabilities")
                     prob_df = pd.DataFrame({
                         'Class': CLASS_NAMES,
-                        'Probability': predictions[0]
+                        'Probability': preds[0]
                     }).sort_values('Probability', ascending=False)
 
                     fig, ax = plt.subplots(figsize=(10, 4))
@@ -653,6 +685,7 @@ def main():
                     st.pyplot(fig)
                     plt.close()
 
+                    # Interpretability
                     st.divider()
                     st.header("🔍 Model Interpretability")
 
@@ -665,6 +698,7 @@ def main():
                     if interp_cols:
                         cols_interp = st.columns(len(interp_cols))
 
+                        # Grad-CAM
                         if show_gradcam:
                             with cols_interp[0]:
                                 st.subheader("Grad-CAM Visualization")
@@ -678,79 +712,4 @@ def main():
 
                                     if heatmap is not None:
                                         heatmap_resized = cv2.resize(heatmap, IMG_SIZE)
-
-                                        fig, ax = plt.subplots(figsize=(6, 6))
-                                        ax.imshow(img_rgb, cmap='gray')
-                                        ax.imshow(heatmap_resized, cmap='jet', alpha=0.5)
-                                        ax.set_title(f'Grad-CAM for {pred_class}')
-                                        ax.axis('off')
-
-                                        st.pyplot(fig)
-                                        plt.close()
-                                    else:
-                                        st.warning("Grad-CAM not available for this model")
-
-                        if show_lime:
-                            with cols_interp[-1]:
-                                st.subheader("LIME Explanation")
-                                with st.spinner(f"Generating LIME (using {lime_samples} samples)..."):
-                                    explanation = generate_lime_explanation(
-                                        st.session_state.model,
-                                        img_batch,
-                                        meta_batch,
-                                        num_samples=lime_samples
-                                    )
-
-                                    if explanation is not None:
-                                        temp, mask = explanation.get_image_and_mask(
-                                            pred_class_idx,
-                                            positive_only=False,
-                                            num_features=10,
-                                            hide_rest=False
-                                        )
-
-                                        fig, ax = plt.subplots(figsize=(6, 6))
-                                        ax.imshow(mark_boundaries(temp / 255.0, mask))
-                                        ax.set_title(f'LIME Explanation for {pred_class}')
-                                        ax.axis('off')
-
-                                        st.pyplot(fig)
-                                        plt.close()
-                                    else:
-                                        st.warning("LIME explanation failed")
-
-    # ------------- Tab 2: Batch Analysis (placeholder) -------------
-    with tab2:
-        st.header("Batch Analysis from CSV")
-        st.info("📁 Upload a CSV file with patient metadata and image paths for batch prediction")
-
-        csv_file = st.file_uploader("Upload CSV file", type=['csv'])
-
-        if csv_file:
-            df = pd.read_csv(csv_file)
-            st.subheader("📋 Data Preview")
-            st.dataframe(df.head(10))
-
-            if st.button("🚀 Run Batch Prediction"):
-                st.warning("⚠️ Batch prediction feature coming soon!")
-
-    # ------------- Tab 3: About -------------
-    with tab3:
-        st.header("About This Application")
-
-        st.markdown("""
-        ### 🦴 Bone Fracture Classification System
-        
-        This application uses advanced deep learning models for multimodal bone fracture classification.
-        
-        #### 🎯 Features:
-        - Multimodal Input: X-ray image + patient metadata  
-        - Multiple Model Support  
-        - Interpretability: Grad-CAM and LIME  
-        - Primary Diagnosis field to compare clinician vs model
-        
-        *For research use only, not for clinical decision-making.*
-        """)
-
-if __name__ == "__main__":
-    main()
+                                        fig, ax = plt.subplots(figsize=(6,
