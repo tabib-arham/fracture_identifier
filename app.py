@@ -387,7 +387,8 @@ def process_metadata_input(metadata_dict, label_encoders, scaler):
                         'male': 0, 'female': 1, 'unknown': 2,
                         'humerus': 0, 'radius': 1, 'ulna': 2, 'femur': 3, 'tibia': 4, 'fibula': 5,
                         'left': 0, 'right': 1,
-                        'visible': 1, 'not_visible': 0,
+                        # visibility (added "slight")
+                        'not_visible': 0, 'visible': 1, 'slight': 2,
                         'distal-fracture': 0, 'proximal-fracture': 1, 'post-fracture': 2, 'non-fracture': 3
                     }
                     encoded = simple_mapping.get(value, 0)
@@ -570,7 +571,8 @@ def main():
                     left_right = st.selectbox("Side", ["left", "right", "unknown"])
                     bone_width = st.number_input("Bone Width (mm)", min_value=0.0, max_value=100.0, value=20.0, step=0.1)
                     fracture_gap = st.number_input("Fracture Gap (mm)", min_value=0.0, max_value=50.0, value=5.0, step=0.1)
-                    gap_visibility = st.selectbox("Gap Visibility", ["visible", "not_visible", "unknown"])
+                    # UPDATED: added "slight" option
+                    gap_visibility = st.selectbox("Gap Visibility", ["visible", "slight", "not_visible", "unknown"])
                 
                 submit_button = st.form_submit_button("🔍 Analyze")
         
@@ -795,7 +797,7 @@ def main():
         4. Click "Analyze" to get predictions
         5. View interpretability visualizations
         
-        ---
+        --- 
         
         **Developed for Medical AI Research**  
         *This tool is for research purposes only and should not be used for clinical diagnosis without proper validation.*
