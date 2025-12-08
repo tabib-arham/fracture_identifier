@@ -712,4 +712,84 @@ def main():
 
                                     if heatmap is not None:
                                         heatmap_resized = cv2.resize(heatmap, IMG_SIZE)
-                                        fig, ax = plt.subplots(figsize=(6,
+                                        fig, ax = plt.subplots(figsize=(6, 6))
+                                        ax.imshow(img_rgb, cmap='gray')
+                                        ax.imshow(heatmap_resized, cmap='jet', alpha=0.5)
+                                        ax.set_title(f'Grad-CAM for {pred_class}')
+                                        ax.axis('off')
+                                        st.pyplot(fig)
+                                        plt.close()
+                                    else:
+                                        st.warning("Grad-CAM not available for this model / configuration.")
+
+                        # LIME
+                        if show_lime:
+                            with cols_interp[-1]:
+                                st.subheader("LIME Explanation")
+                                with st.spinner(f"Generating LIME (using {lime_samples} samples)..."):
+                                    explanation = generate_lime_explanation(
+                                        st.session_state.model,
+                                        img_batch,
+                                        meta_batch,
+                                        num_samples=lime_samples
+                                    )
+
+                                    if explanation is not None:
+                                        temp, mask = explanation.get_image_and_mask(
+                                            pred_class_idx,
+                                            positive_only=False,
+                                            num_features=10,
+                                            hide_rest=False
+                                        )
+
+                                        fig, ax = plt.subplots(figsize=(6, 6))
+                                        ax.imshow(mark_boundaries(temp / 255.0, mask))
+                                        ax.set_title(f'LIME Explanation for {pred_class}')
+                                        ax.axis('off')
+                                        st.pyplot(fig)
+                                        plt.close()
+                                    else:
+                                        st.warning("LIME explanation failed")
+
+    # -------------------------------------------------------------------------
+    # Tab 2: Batch Analysis (placeholder)
+    # -------------------------------------------------------------------------
+    with tab2:
+        st.header("Batch Analysis from CSV")
+        st.info("📁 Upload a CSV file with patient metadata and image paths for batch prediction")
+
+        csv_file = st.file_uploader("Upload CSV file", type=['csv'])
+        if csv_file:
+            df = pd.read_csv(csv_file)
+            st.subheader("📋 Data Preview")
+            st.dataframe(df.head(10))
+            if st.button("🚀 Run Batch Prediction"):
+                st.warning("⚠️ Batch prediction feature coming soon!")
+
+    # -------------------------------------------------------------------------
+    # Tab 3: About
+    # -------------------------------------------------------------------------
+    with tab3:
+        st.header("About This Application")
+        st.markdown("""
+        ### 🦴 Bone Fracture Classification System
+        
+        This application uses multimodal deep learning models (X-ray + metadata)
+        for fracture classification and provides interpretability via Grad-CAM and LIME.
+        
+        **Supported Fracture Types**
+        - Distal fracture  
+        - Proximal fracture  
+        - Post-fracture  
+        - Non-fracture  
+        
+        **Important:**  
+        This tool is for research and educational purposes only and is **not**
+        a substitute for professional medical diagnosis.
+        """)
+
+# -----------------------------------------------------------------------------
+# Entry point
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    main()
