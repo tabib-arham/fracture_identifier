@@ -71,18 +71,18 @@ st.markdown("""
 CLASS_NAMES = ['distal-fracture', 'non-fracture', 'post-fracture', 'proximal-fracture']
 IMG_SIZE = (224, 224)
 
-# 🔹 NEW: options for primary diagnosis (UI)
+# Primary Diagnosis options (visible in UI)
 PRIMARY_DIAGNOSIS_OPTIONS = ["unknown"] + CLASS_NAMES
 
-# Use relative path for deployment compatibility
-BASE_DIR = Path(__file__).parent  # Same directory as app.py
+# Paths
+BASE_DIR = Path(__file__).parent
 MODELS_DIR = BASE_DIR / "outputs" / "models"
 OUTPUT_DIR = BASE_DIR / "outputs"
 
-# Default Model URL (Configure your model URL here)
+# Default Model URL
 DEFAULT_MODEL_URL = "https://drive.google.com/file/d/1731iJjX5LsxeaoM37sUP2lKIxhcsnUEz/view?usp=drive_link"
 
-# Initialize session state
+# Session state
 if 'model' not in st.session_state:
     st.session_state.model = None
 if 'label_encoders' not in st.session_state:
@@ -94,7 +94,9 @@ if 'metadata_feature_cols' not in st.session_state:
 if 'gdrive_model_path' not in st.session_state:
     st.session_state.gdrive_model_path = None
 
+# =========================
 # Helper Functions
+# =========================
 @st.cache_resource
 def load_preprocessing_objects():
     """Load label encoders and scaler"""
@@ -144,6 +146,7 @@ def download_model_from_url(url):
         output_path = os.path.join(temp_dir, 'model.h5')
 
         if 'drive.google.com' in url:
+            # Google Drive link
             if '/file/d/' in url:
                 file_id = url.split('/file/d/')[1].split('/')[0]
             elif 'id=' in url:
@@ -157,6 +160,7 @@ def download_model_from_url(url):
             with st.spinner('Downloading model from Google Drive...'):
                 gdown.download(download_url, output_path, quiet=False)
         else:
+            # Direct URL
             with st.spinner('Downloading model from URL...'):
                 def reporthook(count, block_size, total_size):
                     if total_size > 0:
@@ -193,7 +197,6 @@ def preprocess_xray_image(image, apply_clahe=True, apply_blur=True):
         processed = cv2.GaussianBlur(processed, (3, 3), 0)
 
     processed = processed.astype(np.float32) / 255.0
-
     return original, processed
 
 def prepare_image_for_model(image):
@@ -206,21 +209,23 @@ def prepare_image_for_model(image):
     return img_normalized, img_rgb
 
 def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
-    """Generate Grad-CAM heatmap"""
+    """Generate Grad-CAM heatmap with safer indexing"""
     try:
+        # Find last conv layer if not specified
         if layer_name is None:
             for layer in reversed(model.layers):
                 try:
                     if len(layer.output.shape) == 4:
                         layer_name = layer.name
                         break
-                except:
+                except Exception:
                     continue
 
         if layer_name is None:
             st.warning("No convolutional layer found for Grad-CAM")
             return None
 
+        # Build gradient model
         try:
             grad_model = Model(
                 inputs=model.inputs,
@@ -230,20 +235,29 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
             st.error(f"Error creating gradient model: {str(e)}")
             return None
 
+        # Forward pass
         try:
             with tf.GradientTape() as tape:
-                outputs = grad_model([img_array, meta_array], training=False)
-                if isinstance(outputs, list):
-                    conv_outputs = outputs[0]
-                    predictions = outputs[1]
-                else:
-                    conv_outputs, predictions = outputs
+                conv_outputs, predictions = grad_model([img_array, meta_array], training=False)
 
-                loss = predictions[0][class_idx]
+                preds_shape = predictions.shape
+                # Handle output shapes: (batch, num_classes) or (num_classes,)
+                if len(preds_shape) == 2:
+                    num_classes = int(preds_shape[1])
+                    class_idx_safe = int(np.clip(class_idx, 0, num_classes - 1))
+                    loss = predictions[0, class_idx_safe]
+                elif len(preds_shape) == 1:
+                    num_classes = int(preds_shape[0])
+                    class_idx_safe = int(np.clip(class_idx, 0, num_classes - 1))
+                    loss = predictions[class_idx_safe]
+                else:
+                    st.error(f"Unexpected prediction shape for Grad-CAM: {preds_shape}")
+                    return None
         except Exception as e:
             st.error(f"Error in forward pass: {str(e)}")
             return None
 
+        # Gradients
         try:
             grads = tape.gradient(loss, conv_outputs)
             if grads is None:
@@ -253,9 +267,11 @@ def generate_gradcam(model, img_array, meta_array, class_idx, layer_name=None):
             st.error(f"Error computing gradients: {str(e)}")
             return None
 
+        # Heatmap
         try:
             conv_outputs_val = conv_outputs.numpy()
             grads_val = grads.numpy()
+
             pooled_grads = np.mean(grads_val, axis=(1, 2))[0]
             conv_output = conv_outputs_val[0]
 
@@ -296,7 +312,7 @@ def generate_lime_explanation(model, img_array, meta_array, num_samples=1000):
         explanation = explainer.explain_instance(
             img_for_lime,
             predict_fn,
-            top_labels=4,
+            top_labels=len(CLASS_NAMES),
             hide_color=0,
             num_samples=num_samples
         )
@@ -307,9 +323,13 @@ def generate_lime_explanation(model, img_array, meta_array, num_samples=1000):
         return None
 
 def process_metadata_input(metadata_dict, label_encoders, scaler):
-    """Process metadata input from user"""
+    """
+    Process metadata input from user.
+    Uses same structure as training:
+    categorical_cols = ['gender', 'bone_type', 'left_right', 'gap_visibility', 'fracture_type']
+    numerical_cols   = ['age', 'bone_width', 'fracture_gap']
+    """
     try:
-        # NOTE: we keep fracture_type as in training code
         categorical_cols = ['gender', 'bone_type', 'left_right', 'gap_visibility', 'fracture_type']
         numerical_cols = ['age', 'bone_width', 'fracture_gap']
 
@@ -323,16 +343,27 @@ def process_metadata_input(metadata_dict, label_encoders, scaler):
                     if value in label_encoders[col].classes_:
                         encoded = label_encoders[col].transform([value])[0]
                     else:
-                        encoded = 0
+                        encoded = 0  # unknown
                 else:
+                    # Fallback simple mapping if encoders not found
                     simple_mapping = {
                         'male': 0, 'female': 1, 'unknown': 2,
                         'humerus': 0, 'radius': 1, 'ulna': 2, 'femur': 3, 'tibia': 4, 'fibula': 5,
                         'left': 0, 'right': 1,
-                        'visible': 1, 'not_visible': 0,
-                        'distal-fracture': 0, 'proximal-fracture': 1, 'post-fracture': 2, 'non-fracture': 3
+                        # gap visibility (your CSV logic: 0=no, <5=slight, >5=yes)
+                        'no': 0,
+                        'slight': 1,
+                        'yes': 2,
+                        # keep old UI names valid too
+                        'visible': 2,
+                        'not_visible': 0,
+                        # fracture types
+                        'distal-fracture': 0,
+                        'proximal-fracture': 1,
+                        'post-fracture': 2,
+                        'non-fracture': 3
                     }
-                    encoded = simple_mapping.get(value, 0)
+                    encoded = simple_mapping.get(str(value).lower(), 0)
 
                 features.append(encoded)
 
@@ -346,10 +377,11 @@ def process_metadata_input(metadata_dict, label_encoders, scaler):
         if scaler:
             numerical_scaled = scaler.transform([numerical_values])[0]
         else:
+            # Simple normalization if no scaler
             numerical_scaled = [
-                numerical_values[0] / 100.0,
-                numerical_values[1] / 50.0,
-                numerical_values[2] / 20.0
+                numerical_values[0] / 100.0,  # age (0-100)
+                numerical_values[1] / 50.0,   # bone_width (0-50mm)
+                numerical_values[2] / 20.0    # fracture_gap (0-20mm)
             ]
 
         features.extend(numerical_scaled)
@@ -359,7 +391,9 @@ def process_metadata_input(metadata_dict, label_encoders, scaler):
         st.error(f"Error processing metadata: {str(e)}")
         return None
 
+# =========================
 # Main App
+# =========================
 def main():
     # Header
     st.markdown('<h1 class="main-header">🦴 Bone Fracture Classification System</h1>', unsafe_allow_html=True)
@@ -369,7 +403,6 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # Model selection
         st.subheader("1. Select Model Source")
 
         options = ["Local Files", "URL (Google Drive or Direct)"]
@@ -379,7 +412,7 @@ def main():
         model_source = st.radio("Load model from:", options)
 
         if model_source == "Default Model (Hardcoded)":
-            st.info(f"📌 Using configured default model")
+            st.info("📌 Using configured default model")
             st.code(DEFAULT_MODEL_URL, language=None)
 
             if st.button("Load Default Model"):
@@ -465,11 +498,13 @@ def main():
 
     tab1, tab2, tab3 = st.tabs(["📤 Upload & Predict", "📊 Batch Analysis", "ℹ️ About"])
 
+    # ------------- Tab 1: Single Image Prediction -------------
     with tab1:
         st.header("Single Image Prediction")
 
         col1, col2 = st.columns([1, 1])
 
+        # Image input
         with col1:
             st.subheader("📷 Image Input")
             uploaded_file = st.file_uploader("Upload X-ray image", type=['jpg', 'jpeg', 'png'])
@@ -480,6 +515,7 @@ def main():
                 image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
                 st.image(image_rgb, caption="Uploaded X-ray", use_container_width=True)
 
+        # Metadata input
         with col2:
             st.subheader("📋 Patient Metadata")
 
@@ -502,9 +538,13 @@ def main():
                     fracture_gap = st.number_input(
                         "Fracture Gap (mm)", min_value=0.0, max_value=50.0, value=5.0, step=0.1
                     )
-                    gap_visibility = st.selectbox("Gap Visibility", ["visible", "not_visible", "unknown"])
+                    # UPDATED: include 'slight' & align with CSV (yes/slight/no)
+                    gap_visibility = st.selectbox(
+                        "Gap Visibility",
+                        ["yes", "slight", "no", "unknown"],
+                        help="yes: clear gap, slight: small gap, no: no visible gap"
+                    )
 
-                # 🔹 NEW: Primary Diagnosis field
                 primary_diagnosis = st.selectbox(
                     "Primary Diagnosis (clinical / radiologist)",
                     PRIMARY_DIAGNOSIS_OPTIONS,
@@ -514,12 +554,13 @@ def main():
 
                 submit_button = st.form_submit_button("🔍 Analyze")
 
+        # Prediction
         if uploaded_file and submit_button:
             with st.spinner("Analyzing..."):
                 img_normalized, img_rgb = prepare_image_for_model(image_rgb)
                 img_batch = np.expand_dims(img_normalized, axis=0)
 
-                # 🔹 NEW: use primary_diagnosis to populate fracture_type metadata
+                # fracture_type metadata from primary diagnosis (optional)
                 if primary_diagnosis in CLASS_NAMES:
                     fracture_type_meta = primary_diagnosis
                 else:
@@ -533,8 +574,8 @@ def main():
                     'bone_width': bone_width,
                     'fracture_gap': fracture_gap,
                     'gap_visibility': gap_visibility,
-                    'fracture_type': fracture_type_meta,   # used by model
-                    'primary_diagnosis': primary_diagnosis  # UI-only (ignored in process_metadata_input)
+                    'fracture_type': fracture_type_meta,
+                    'primary_diagnosis': primary_diagnosis  # for record only
                 }
 
                 meta_features = process_metadata_input(
@@ -547,9 +588,9 @@ def main():
                     meta_batch = np.expand_dims(meta_features, axis=0)
 
                     predictions = st.session_state.model.predict([img_batch, meta_batch], verbose=0)
-                    pred_class_idx = np.argmax(predictions[0])
+                    pred_class_idx = int(np.argmax(predictions[0]))
                     pred_class = CLASS_NAMES[pred_class_idx]
-                    pred_confidence = predictions[0][pred_class_idx]
+                    pred_confidence = float(predictions[0][pred_class_idx])
 
                     st.divider()
                     st.header("🎯 Prediction Results")
@@ -580,7 +621,6 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
 
-                    # 🔹 NEW: show primary diagnosis (if provided)
                     with col4_m:
                         display_pd = primary_diagnosis if primary_diagnosis != "unknown" else "Not provided"
                         st.markdown(f"""
@@ -597,7 +637,7 @@ def main():
                     }).sort_values('Probability', ascending=False)
 
                     fig, ax = plt.subplots(figsize=(10, 4))
-                    bars = ax.barh(
+                    ax.barh(
                         prob_df['Class'],
                         prob_df['Probability'],
                         color=['#667eea' if c == pred_class else '#cbd5e0' for c in prob_df['Class']]
@@ -606,7 +646,7 @@ def main():
                     ax.set_title('Prediction Probabilities for All Classes')
                     ax.set_xlim(0, 1)
 
-                    for i, (idx, row) in enumerate(prob_df.iterrows()):
+                    for i, (_, row) in enumerate(prob_df.iterrows()):
                         ax.text(row['Probability'] + 0.02, i, f"{row['Probability']:.3f}",
                                 va='center', fontweight='bold')
 
@@ -679,6 +719,7 @@ def main():
                                     else:
                                         st.warning("LIME explanation failed")
 
+    # ------------- Tab 2: Batch Analysis (placeholder) -------------
     with tab2:
         st.header("Batch Analysis from CSV")
         st.info("📁 Upload a CSV file with patient metadata and image paths for batch prediction")
@@ -693,6 +734,7 @@ def main():
             if st.button("🚀 Run Batch Prediction"):
                 st.warning("⚠️ Batch prediction feature coming soon!")
 
+    # ------------- Tab 3: About -------------
     with tab3:
         st.header("About This Application")
 
@@ -702,22 +744,12 @@ def main():
         This application uses advanced deep learning models for multimodal bone fracture classification.
         
         #### 🎯 Features:
-        - **Multimodal Input**: Combines X-ray images with patient metadata
-        - **Multiple Model Support**: Choose from various trained architectures
-        - **Interpretability**: Grad-CAM and LIME visualizations
-        - **Real-time Prediction**: Instant classification results
-        - **Batch Processing**: Analyze multiple cases at once
-        - **Primary Diagnosis Field**: Optionally record clinician's primary diagnosis for comparison
+        - Multimodal Input: X-ray image + patient metadata  
+        - Multiple Model Support  
+        - Interpretability: Grad-CAM and LIME  
+        - Primary Diagnosis field to compare clinician vs model
         
-        #### 🏥 Supported Fracture Types:
-        1. **Distal Fracture**
-        2. **Proximal Fracture**
-        3. **Post-Fracture**
-        4. **Non-Fracture**
-        
-        ---
-        
-        *This tool is for research purposes only and should not be used for clinical diagnosis without proper validation.*
+        *For research use only, not for clinical decision-making.*
         """)
 
 if __name__ == "__main__":
